@@ -1024,6 +1024,15 @@ func (h *Handler) handleClaudeStream(w http.ResponseWriter, account *config.Acco
 		thinkingOutput = ""
 	}
 	outputTokens = estimateClaudeOutputTokens(outputContent, thinkingOutput, toolUses)
+	if emptyAIResult(outputContent, thinkingOutput, len(toolUses)) {
+		h.recordFailure()
+		logAIRequest("claude", model, true, account, inputTokens, 0, credits, started, errEmptyKiroResponse, inputLog, formatAIOutputLog(outputContent, thinkingOutput, toolUses))
+		h.sendSSE(w, flusher, "error", map[string]interface{}{
+			"type":  "error",
+			"error": map[string]string{"type": "api_error", "message": errEmptyKiroResponse.Error()},
+		})
+		return
+	}
 
 	h.recordSuccess(inputTokens, outputTokens, credits)
 	h.pool.RecordSuccess(account.ID)
@@ -1164,6 +1173,12 @@ func (h *Handler) handleClaudeNonStream(w http.ResponseWriter, account *config.A
 		inputTokens = estimatedInputTokens
 	}
 	outputTokens = estimateClaudeOutputTokens(finalContent, thinkingContent, toolUses)
+	if emptyAIResult(finalContent, thinkingContent, len(toolUses)) {
+		h.recordFailure()
+		logAIRequest("claude", model, false, account, inputTokens, 0, credits, started, errEmptyKiroResponse, inputLog, formatAIOutputLog(finalContent, thinkingContent, toolUses))
+		h.sendClaudeError(w, 502, "api_error", errEmptyKiroResponse.Error())
+		return
+	}
 
 	h.recordSuccess(inputTokens, outputTokens, credits)
 	h.pool.RecordSuccess(account.ID)
@@ -1611,6 +1626,21 @@ func (h *Handler) handleOpenAIStream(w http.ResponseWriter, account *config.Acco
 		outputTokens += estimateApproxTokens(tc.Function.Name)
 		outputTokens += estimateApproxTokens(tc.Function.Arguments)
 	}
+	if emptyAIResult(outputContent, reasoningOutput, len(toolCalls)) {
+		h.recordFailure()
+		logAIRequest("openai", model, true, account, inputTokens, 0, credits, started, errEmptyKiroResponse, inputLog, formatAIOutputLog(outputContent, reasoningOutput, toolCallsToKiroToolUses(toolCalls)))
+		errorChunk := map[string]interface{}{
+			"error": map[string]string{
+				"type":    "api_error",
+				"message": errEmptyKiroResponse.Error(),
+			},
+		}
+		data, _ := json.Marshal(errorChunk)
+		fmt.Fprintf(w, "data: %s\n\n", string(data))
+		fmt.Fprintf(w, "data: [DONE]\n\n")
+		flusher.Flush()
+		return
+	}
 
 	h.recordSuccess(inputTokens, outputTokens, credits)
 	h.pool.RecordSuccess(account.ID)
@@ -1688,6 +1718,12 @@ func (h *Handler) handleOpenAINonStream(w http.ResponseWriter, account *config.A
 		inputTokens = estimatedInputTokens
 	}
 	outputTokens = estimateOpenAIOutputTokens(finalContent, reasoningContent, toolUses)
+	if emptyAIResult(finalContent, reasoningContent, len(toolUses)) {
+		h.recordFailure()
+		logAIRequest("openai", model, false, account, inputTokens, 0, credits, started, errEmptyKiroResponse, inputLog, formatAIOutputLog(finalContent, reasoningContent, toolUses))
+		h.sendOpenAIError(w, 502, "api_error", errEmptyKiroResponse.Error())
+		return
+	}
 
 	h.recordSuccess(inputTokens, outputTokens, credits)
 	h.pool.RecordSuccess(account.ID)
@@ -2782,6 +2818,10 @@ func formatAIOutputLog(content, reasoning string, toolUses []KiroToolUse) string
 		payload["tool_uses"] = summarizeKiroToolUses(toolUses)
 	}
 	return compactLogJSON(payload)
+}
+
+func emptyAIResult(content, reasoning string, toolUseCount int) bool {
+	return strings.TrimSpace(content) == "" && strings.TrimSpace(reasoning) == "" && toolUseCount == 0
 }
 
 func toolCallsToKiroToolUses(toolCalls []ToolCall) []KiroToolUse {

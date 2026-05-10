@@ -5,6 +5,7 @@ package proxy
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"kiro-go/config"
@@ -17,6 +18,8 @@ import (
 
 	"github.com/google/uuid"
 )
+
+var errEmptyKiroResponse = errors.New("empty Kiro response: no assistant content, reasoning content, or tool use events")
 
 // 双端点配置（429 时自动 fallback）
 type kiroEndpoint struct {
@@ -232,6 +235,7 @@ func parseEventStream(body io.Reader, callback *KiroStreamCallback) error {
 	var currentToolUse *toolUseState
 	var lastAssistantContent string
 	var lastReasoningContent string
+	var sawOutput bool
 
 	for {
 		// Prelude: 12 bytes (total_len + headers_len + crc)
@@ -282,6 +286,7 @@ func parseEventStream(body io.Reader, callback *KiroStreamCallback) error {
 			if content, ok := event["content"].(string); ok && content != "" {
 				normalized := normalizeChunk(content, &lastAssistantContent)
 				if normalized != "" {
+					sawOutput = true
 					callback.OnText(normalized, false)
 				}
 			}
@@ -289,24 +294,76 @@ func parseEventStream(body io.Reader, callback *KiroStreamCallback) error {
 			if text, ok := event["text"].(string); ok && text != "" {
 				normalized := normalizeChunk(text, &lastReasoningContent)
 				if normalized != "" {
+					sawOutput = true
 					callback.OnText(normalized, true)
 				}
 			}
 		case "toolUseEvent":
+			sawOutput = true
 			currentToolUse = handleToolUseEvent(event, currentToolUse, callback)
 		case "meteringEvent":
 			if usage, ok := event["usage"].(float64); ok {
 				totalCredits += usage
 			}
+		default:
+			if err := kiroEventError(eventType, event); err != nil {
+				if callback.OnComplete != nil {
+					callback.OnComplete(inputTokens, outputTokens)
+				}
+				if callback.OnError != nil {
+					callback.OnError(err)
+				}
+				return err
+			}
 		}
+	}
+
+	if currentToolUse != nil {
+		sawOutput = true
+		finishToolUse(currentToolUse, callback)
 	}
 
 	if callback.OnCredits != nil && totalCredits > 0 {
 		callback.OnCredits(totalCredits)
 	}
 
-	callback.OnComplete(inputTokens, outputTokens)
+	if callback.OnComplete != nil {
+		callback.OnComplete(inputTokens, outputTokens)
+	}
+	if !sawOutput {
+		if callback.OnError != nil {
+			callback.OnError(errEmptyKiroResponse)
+		}
+		return errEmptyKiroResponse
+	}
 	return nil
+}
+
+func kiroEventError(eventType string, event map[string]interface{}) error {
+	eventTypeLower := strings.ToLower(eventType)
+	if !strings.Contains(eventTypeLower, "error") && !strings.Contains(eventTypeLower, "exception") {
+		return nil
+	}
+
+	message := firstStringValue(event, "message", "error", "errorMessage", "reason", "detail")
+	if message == "" {
+		if raw, err := json.Marshal(event); err == nil && len(raw) > 0 {
+			message = string(raw)
+		}
+	}
+	if message == "" {
+		message = "unknown upstream error"
+	}
+	return fmt.Errorf("Kiro %s: %s", eventType, message)
+}
+
+func firstStringValue(m map[string]interface{}, keys ...string) string {
+	for _, key := range keys {
+		if value, ok := m[key].(string); ok && strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func updateTokensFromEvent(event map[string]interface{}, currentInputTokens, currentOutputTokens int) (int, int) {
