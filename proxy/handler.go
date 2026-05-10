@@ -2596,12 +2596,46 @@ func filterAIRequestLogLines(content string, lines int, level string) string {
 		if level == "failed" && !strings.Contains(line, " status=failed ") {
 			continue
 		}
-		matches = append(matches, line)
+		matches = append(matches, redactSensitiveAIRequestLogLine(line))
 	}
 	if len(matches) > lines {
 		matches = matches[len(matches)-lines:]
 	}
 	return strings.Join(matches, "\n")
+}
+
+func redactSensitiveAIRequestLogLine(line string) string {
+	if !isClaudeCodeHarnessSystemPrompt(line) {
+		return line
+	}
+	return redactLogQuotedField(line, "input", "[redacted: claude-code system prompt]")
+}
+
+func redactLogQuotedField(line, field, replacement string) string {
+	marker := " " + field + "="
+	idx := strings.Index(line, marker)
+	if idx == -1 {
+		return line
+	}
+
+	valueStart := idx + len(marker)
+	if valueStart >= len(line) || line[valueStart] != '"' {
+		return line
+	}
+
+	escaped := false
+	for i := valueStart + 1; i < len(line); i++ {
+		switch {
+		case escaped:
+			escaped = false
+		case line[i] == '\\':
+			escaped = true
+		case line[i] == '"':
+			return line[:valueStart] + strconv.Quote(replacement) + line[i+1:]
+		}
+	}
+
+	return line
 }
 
 func normalizedLogLevel(level string) string {
@@ -2686,7 +2720,7 @@ func formatClaudeRequestLogInput(req *ClaudeRequest) string {
 		"max_tokens":  req.MaxTokens,
 		"temperature": req.Temperature,
 		"top_p":       req.TopP,
-		"system":      extractSystemPrompt(req.System),
+		"system":      formatSystemPromptForLog(extractSystemPrompt(req.System)),
 		"messages":    messages,
 	}
 	if len(req.Tools) > 0 {
@@ -2702,9 +2736,13 @@ func formatClaudeRequestLogInput(req *ClaudeRequest) string {
 func formatOpenAIRequestLogInput(req *OpenAIRequest) string {
 	messages := make([]map[string]interface{}, 0, len(req.Messages))
 	for _, msg := range req.Messages {
+		content := extractOpenAIMessageText(msg.Content)
+		if msg.Role == "system" {
+			content = formatSystemPromptForLog(content)
+		}
 		item := map[string]interface{}{
 			"role":    msg.Role,
-			"content": extractOpenAIMessageText(msg.Content),
+			"content": content,
 		}
 		if msg.ToolCallID != "" {
 			item["tool_call_id"] = msg.ToolCallID

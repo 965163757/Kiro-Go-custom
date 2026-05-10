@@ -15,6 +15,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"kiro-go/config"
 	"kiro-go/pool"
 	"kiro-go/proxy"
@@ -25,6 +26,8 @@ import (
 )
 
 func main() {
+	initLogging()
+
 	// 配置文件路径，支持环境变量覆盖
 	configPath := "data/config.json"
 	if envPath := os.Getenv("CONFIG_PATH"); envPath != "" {
@@ -62,4 +65,27 @@ func main() {
 	if err := http.ListenAndServe(addr, handler); err != nil {
 		log.Fatalf("Server failed: %v", err)
 	}
+}
+
+func initLogging() {
+	logPath := os.Getenv("LOG_PATH")
+	if logPath == "" {
+		logPath = "data/kiro-go.log"
+	}
+
+	dir := filepath.Dir(logPath)
+	if dir != "." {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			log.Printf("Failed to create log directory: %v", err)
+			return
+		}
+	}
+
+	file, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+	if err != nil {
+		log.Printf("Failed to open log file %s: %v", logPath, err)
+		return
+	}
+
+	log.SetOutput(io.MultiWriter(os.Stdout, file))
 }

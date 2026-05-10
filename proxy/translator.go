@@ -156,8 +156,8 @@ func ClaudeToKiro(req *ClaudeRequest, thinking bool) *KiroPayload {
 	modelID := MapModel(req.Model)
 	origin := "AI_EDITOR"
 
-	// 提取系统提示
-	systemPrompt := extractSystemPrompt(req.System)
+	// 提取系统提示。Claude Code 等客户端的运行时 harness system 不应作为 user 内容转发。
+	systemPrompt := filterForwardableSystemPrompt(extractSystemPrompt(req.System))
 
 	// 如果启用 thinking 模式，注入 thinking 提示
 	if thinking {
@@ -215,7 +215,7 @@ func ClaudeToKiro(req *ClaudeRequest, thinking bool) *KiroPayload {
 	// 构建最终内容
 	finalContent := ""
 	if systemPrompt != "" {
-		finalContent = "--- SYSTEM PROMPT ---\n" + systemPrompt + "\n--- END SYSTEM PROMPT ---\n\n"
+		finalContent = systemPrompt + "\n\n"
 	}
 	if currentContent != "" {
 		finalContent += currentContent
@@ -282,6 +282,43 @@ func extractSystemPrompt(system interface{}) string {
 		return strings.Join(parts, "\n")
 	}
 	return ""
+}
+
+func filterForwardableSystemPrompt(systemPrompt string) string {
+	systemPrompt = strings.TrimSpace(systemPrompt)
+	if systemPrompt == "" || isClaudeCodeHarnessSystemPrompt(systemPrompt) {
+		return ""
+	}
+	return systemPrompt
+}
+
+func isClaudeCodeHarnessSystemPrompt(systemPrompt string) bool {
+	normalized := strings.ToLower(systemPrompt)
+	if strings.Contains(normalized, ".claude/projects") {
+		return true
+	}
+	if strings.Contains(normalized, "x-anthropic-billing") && strings.Contains(normalized, "claude") {
+		return true
+	}
+	if strings.Contains(normalized, "claude code") &&
+		(strings.Contains(normalized, "anthropic") ||
+			strings.Contains(normalized, "official cli") ||
+			strings.Contains(normalized, ".claude/") ||
+			strings.Contains(normalized, "system prompt")) {
+		return true
+	}
+	return false
+}
+
+func formatSystemPromptForLog(systemPrompt string) string {
+	systemPrompt = strings.TrimSpace(systemPrompt)
+	if systemPrompt == "" {
+		return ""
+	}
+	if isClaudeCodeHarnessSystemPrompt(systemPrompt) {
+		return "[dropped claude-code system prompt]"
+	}
+	return systemPrompt
 }
 
 func extractClaudeUserContent(content interface{}) (string, []KiroImage, []KiroToolResult) {
@@ -575,7 +612,9 @@ func OpenAIToKiro(req *OpenAIRequest, thinking bool) *KiroPayload {
 	for _, msg := range req.Messages {
 		if msg.Role == "system" {
 			if s := extractOpenAIMessageText(msg.Content); s != "" {
-				systemPrompt += s + "\n"
+				if s = filterForwardableSystemPrompt(s); s != "" {
+					systemPrompt += s + "\n"
+				}
 			}
 		} else {
 			nonSystemMessages = append(nonSystemMessages, msg)

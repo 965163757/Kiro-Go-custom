@@ -197,6 +197,107 @@ func TestClaudeConversationIDStableFromAnchor(t *testing.T) {
 	}
 }
 
+func TestClaudeToKiroDropsClaudeCodeHarnessSystemPrompt(t *testing.T) {
+	req := &ClaudeRequest{
+		Model:  "claude-sonnet-4.5",
+		System: "You are Claude Code, Anthropic's official CLI for Claude.\nUse /Users/yuan/.claude/projects/-Users-yuan/memory/ for memory.",
+		Messages: []ClaudeMessage{
+			{Role: "user", Content: "real task"},
+		},
+	}
+
+	payload := ClaudeToKiro(req, false)
+	content := payload.ConversationState.CurrentMessage.UserInputMessage.Content
+
+	if strings.Contains(content, "Claude Code") || strings.Contains(content, ".claude/projects") {
+		t.Fatalf("expected Claude Code harness system prompt to be dropped, got %q", content)
+	}
+	if content != "real task" {
+		t.Fatalf("expected only user content, got %q", content)
+	}
+}
+
+func TestClaudeToKiroDoesNotWrapSystemPromptAsUserPromptInjection(t *testing.T) {
+	req := &ClaudeRequest{
+		Model:  "claude-sonnet-4.5",
+		System: "Answer in concise JSON.",
+		Messages: []ClaudeMessage{
+			{Role: "user", Content: "real task"},
+		},
+	}
+
+	payload := ClaudeToKiro(req, false)
+	content := payload.ConversationState.CurrentMessage.UserInputMessage.Content
+
+	if strings.Contains(content, "SYSTEM PROMPT") || strings.Contains(content, "END SYSTEM PROMPT") {
+		t.Fatalf("expected no system prompt wrapper, got %q", content)
+	}
+	if !strings.Contains(content, "Answer in concise JSON.") || !strings.Contains(content, "real task") {
+		t.Fatalf("expected retained plain system instruction and user content, got %q", content)
+	}
+}
+
+func TestOpenAIToKiroDropsClaudeCodeHarnessSystemPrompt(t *testing.T) {
+	req := &OpenAIRequest{
+		Model: "claude-sonnet-4.5",
+		Messages: []OpenAIMessage{
+			{Role: "system", Content: "You are Claude Code, Anthropic's official CLI for Claude.\nUse /Users/yuan/.claude/projects/-Users-yuan/memory/ for memory."},
+			{Role: "user", Content: "real task"},
+		},
+	}
+
+	payload := OpenAIToKiro(req, false)
+	content := payload.ConversationState.CurrentMessage.UserInputMessage.Content
+
+	if strings.Contains(content, "Claude Code") || strings.Contains(content, ".claude/projects") {
+		t.Fatalf("expected Claude Code harness system prompt to be dropped, got %q", content)
+	}
+	if content != "real task" {
+		t.Fatalf("expected only user content, got %q", content)
+	}
+}
+
+func TestRequestLogRedactsClaudeCodeHarnessSystemPrompt(t *testing.T) {
+	claudeReq := &ClaudeRequest{
+		Model:  "claude-sonnet-4.5",
+		System: "You are Claude Code, Anthropic's official CLI for Claude.\nUse /Users/yuan/.claude/projects/-Users-yuan/memory/ for memory.",
+		Messages: []ClaudeMessage{
+			{Role: "user", Content: "real task"},
+		},
+	}
+	claudeLog := formatClaudeRequestLogInput(claudeReq)
+	if strings.Contains(claudeLog, ".claude/projects") || !strings.Contains(claudeLog, "dropped claude-code system prompt") {
+		t.Fatalf("expected Claude request log to redact harness system prompt, got %q", claudeLog)
+	}
+
+	openAIReq := &OpenAIRequest{
+		Model: "claude-sonnet-4.5",
+		Messages: []OpenAIMessage{
+			{Role: "system", Content: "You are Claude Code, Anthropic's official CLI for Claude.\nUse /Users/yuan/.claude/projects/-Users-yuan/memory/ for memory."},
+			{Role: "user", Content: "real task"},
+		},
+	}
+	openAILog := formatOpenAIRequestLogInput(openAIReq)
+	if strings.Contains(openAILog, ".claude/projects") || !strings.Contains(openAILog, "dropped claude-code system prompt") {
+		t.Fatalf("expected OpenAI request log to redact harness system prompt, got %q", openAILog)
+	}
+}
+
+func TestFilterAIRequestLogLinesRedactsLegacyClaudeCodeHarnessInput(t *testing.T) {
+	content := `2026/05/11 01:02:18 [AIRequest] api=claude model=claude-opus-4.7 stream=true status=success account=abc input_tokens=1 output_tokens=1 total_tokens=2 credits=0.1 duration_ms=10 error="" input="{\"system\":\"x-anthropic-billing-header: cc_version=1; cc_entrypoint=cli;\\nYou are Claude Code, Anthropic's official CLI for Claude.\\nUse /Users/yuan/.claude/projects/-Users-yuan/memory/ for memory.\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}" output="ok"`
+
+	got := filterAIRequestLogLines(content, 1, "all")
+	if strings.Contains(got, ".claude/projects") || strings.Contains(got, "x-anthropic-billing-header") {
+		t.Fatalf("expected legacy AI request input to be redacted, got %q", got)
+	}
+	if !strings.Contains(got, `input="[redacted: claude-code system prompt]"`) {
+		t.Fatalf("expected redacted input placeholder, got %q", got)
+	}
+	if !strings.Contains(got, `output="ok"`) {
+		t.Fatalf("expected non-sensitive output to remain, got %q", got)
+	}
+}
+
 func TestOpenAIConversationIDRandomForSyntheticAnchor(t *testing.T) {
 	req := &OpenAIRequest{
 		Model: "claude-sonnet-4.5",
