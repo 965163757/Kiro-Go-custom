@@ -197,27 +197,33 @@ func TestClaudeConversationIDStableFromAnchor(t *testing.T) {
 	}
 }
 
-func TestClaudeToKiroDropsClaudeCodeHarnessSystemPrompt(t *testing.T) {
+func TestClaudeToKiroKeepsCurrentUserUnchangedForMultiTurnSystemPrompt(t *testing.T) {
 	req := &ClaudeRequest{
 		Model:  "claude-sonnet-4.5",
 		System: "You are Claude Code, Anthropic's official CLI for Claude.\nUse /Users/yuan/.claude/projects/-Users-yuan/memory/ for memory.",
 		Messages: []ClaudeMessage{
-			{Role: "user", Content: "real task"},
+			{Role: "user", Content: "first user task"},
+			{Role: "assistant", Content: "assistant answer"},
+			{Role: "user", Content: "current user task"},
 		},
 	}
 
 	payload := ClaudeToKiro(req, false)
-	content := payload.ConversationState.CurrentMessage.UserInputMessage.Content
+	currentContent := payload.ConversationState.CurrentMessage.UserInputMessage.Content
 
-	if strings.Contains(content, "Claude Code") || strings.Contains(content, ".claude/projects") {
-		t.Fatalf("expected Claude Code harness system prompt to be dropped, got %q", content)
+	if currentContent != "current user task" {
+		t.Fatalf("expected current user content to stay unchanged, got %q", currentContent)
 	}
-	if content != "real task" {
-		t.Fatalf("expected only user content, got %q", content)
+	if len(payload.ConversationState.History) == 0 || payload.ConversationState.History[0].UserInputMessage == nil {
+		t.Fatalf("expected first user history message")
+	}
+	firstHistoryContent := payload.ConversationState.History[0].UserInputMessage.Content
+	if !strings.Contains(firstHistoryContent, "Claude Code") || !strings.Contains(firstHistoryContent, "first user task") {
+		t.Fatalf("expected Claude Code system prompt to be preserved in first history user, got %q", firstHistoryContent)
 	}
 }
 
-func TestClaudeToKiroDoesNotWrapSystemPromptAsUserPromptInjection(t *testing.T) {
+func TestClaudeToKiroSingleTurnPreservesSystemWithoutPromptInjectionWrapper(t *testing.T) {
 	req := &ClaudeRequest{
 		Model:  "claude-sonnet-4.5",
 		System: "Answer in concise JSON.",
@@ -237,23 +243,29 @@ func TestClaudeToKiroDoesNotWrapSystemPromptAsUserPromptInjection(t *testing.T) 
 	}
 }
 
-func TestOpenAIToKiroDropsClaudeCodeHarnessSystemPrompt(t *testing.T) {
+func TestOpenAIToKiroKeepsCurrentUserUnchangedForMultiTurnSystemPrompt(t *testing.T) {
 	req := &OpenAIRequest{
 		Model: "claude-sonnet-4.5",
 		Messages: []OpenAIMessage{
 			{Role: "system", Content: "You are Claude Code, Anthropic's official CLI for Claude.\nUse /Users/yuan/.claude/projects/-Users-yuan/memory/ for memory."},
-			{Role: "user", Content: "real task"},
+			{Role: "user", Content: "first user task"},
+			{Role: "assistant", Content: "assistant answer"},
+			{Role: "user", Content: "current user task"},
 		},
 	}
 
 	payload := OpenAIToKiro(req, false)
-	content := payload.ConversationState.CurrentMessage.UserInputMessage.Content
+	currentContent := payload.ConversationState.CurrentMessage.UserInputMessage.Content
 
-	if strings.Contains(content, "Claude Code") || strings.Contains(content, ".claude/projects") {
-		t.Fatalf("expected Claude Code harness system prompt to be dropped, got %q", content)
+	if currentContent != "current user task" {
+		t.Fatalf("expected current user content to stay unchanged, got %q", currentContent)
 	}
-	if content != "real task" {
-		t.Fatalf("expected only user content, got %q", content)
+	if len(payload.ConversationState.History) == 0 || payload.ConversationState.History[0].UserInputMessage == nil {
+		t.Fatalf("expected first user history message")
+	}
+	firstHistoryContent := payload.ConversationState.History[0].UserInputMessage.Content
+	if !strings.Contains(firstHistoryContent, "Claude Code") || !strings.Contains(firstHistoryContent, "first user task") {
+		t.Fatalf("expected Claude Code system prompt to be preserved in first history user, got %q", firstHistoryContent)
 	}
 }
 

@@ -156,8 +156,9 @@ func ClaudeToKiro(req *ClaudeRequest, thinking bool) *KiroPayload {
 	modelID := MapModel(req.Model)
 	origin := "AI_EDITOR"
 
-	// 提取系统提示。Claude Code 等客户端的运行时 harness system 不应作为 user 内容转发。
-	systemPrompt := filterForwardableSystemPrompt(extractSystemPrompt(req.System))
+	// 提取系统提示。Kiro 没有独立 system 字段，因此按 AIClient2API 的形状：
+	// 多轮时放进第一条历史 user，当前 user 保持原样；单轮时才放进 currentMessage。
+	systemPrompt := strings.TrimSpace(extractSystemPrompt(req.System))
 
 	// 如果启用 thinking 模式，注入 thinking 提示
 	if thinking {
@@ -169,6 +170,7 @@ func ClaudeToKiro(req *ClaudeRequest, thinking bool) *KiroPayload {
 	var currentContent string
 	var currentImages []KiroImage
 	var currentToolResults []KiroToolResult
+	systemMerged := false
 
 	for i, msg := range req.Messages {
 		isLast := i == len(req.Messages)-1
@@ -182,6 +184,10 @@ func ClaudeToKiro(req *ClaudeRequest, thinking bool) *KiroPayload {
 				currentImages = images
 				currentToolResults = toolResults
 			} else {
+				if !systemMerged && systemPrompt != "" {
+					content = prependSystemPrompt(systemPrompt, content)
+					systemMerged = true
+				}
 				userMsg := KiroUserInputMessage{
 					Content: content,
 					ModelID: modelID,
@@ -214,17 +220,17 @@ func ClaudeToKiro(req *ClaudeRequest, thinking bool) *KiroPayload {
 
 	// 构建最终内容
 	finalContent := ""
-	if systemPrompt != "" {
-		finalContent = systemPrompt + "\n\n"
-	}
 	if currentContent != "" {
-		finalContent += currentContent
+		finalContent = currentContent
 	} else if len(currentImages) > 0 {
-		finalContent += normalizeUserContent("", true)
+		finalContent = normalizeUserContent("", true)
 	} else if len(currentToolResults) > 0 {
-		finalContent += buildToolResultsContinuation(currentToolResults)
+		finalContent = buildToolResultsContinuation(currentToolResults)
 	} else {
-		finalContent += minimalFallbackUserContent
+		finalContent = minimalFallbackUserContent
+	}
+	if !systemMerged && systemPrompt != "" {
+		finalContent = prependSystemPrompt(systemPrompt, finalContent)
 	}
 
 	// 转换工具
@@ -284,12 +290,16 @@ func extractSystemPrompt(system interface{}) string {
 	return ""
 }
 
-func filterForwardableSystemPrompt(systemPrompt string) string {
+func prependSystemPrompt(systemPrompt, content string) string {
 	systemPrompt = strings.TrimSpace(systemPrompt)
-	if systemPrompt == "" || isClaudeCodeHarnessSystemPrompt(systemPrompt) {
-		return ""
+	content = strings.TrimSpace(content)
+	if systemPrompt == "" {
+		return content
 	}
-	return systemPrompt
+	if content == "" {
+		return systemPrompt
+	}
+	return systemPrompt + "\n\n" + content
 }
 
 func isClaudeCodeHarnessSystemPrompt(systemPrompt string) bool {
@@ -612,9 +622,7 @@ func OpenAIToKiro(req *OpenAIRequest, thinking bool) *KiroPayload {
 	for _, msg := range req.Messages {
 		if msg.Role == "system" {
 			if s := extractOpenAIMessageText(msg.Content); s != "" {
-				if s = filterForwardableSystemPrompt(s); s != "" {
-					systemPrompt += s + "\n"
-				}
+				systemPrompt += s + "\n"
 			}
 		} else {
 			nonSystemMessages = append(nonSystemMessages, msg)
@@ -641,9 +649,9 @@ func OpenAIToKiro(req *OpenAIRequest, thinking bool) *KiroPayload {
 			content, images := extractOpenAIUserContent(msg.Content)
 			content = normalizeUserContent(content, len(images) > 0)
 
-			// 第一条 user 消息合并 system prompt
-			if !systemMerged && systemPrompt != "" {
-				content = systemPrompt + "\n" + content
+			// 多轮时把 system prompt 放在第一条历史 user 中，避免改动当前 user。
+			if !isLast && !systemMerged && systemPrompt != "" {
+				content = prependSystemPrompt(systemPrompt, content)
 				systemMerged = true
 			}
 
@@ -725,7 +733,7 @@ func OpenAIToKiro(req *OpenAIRequest, thinking bool) *KiroPayload {
 		}
 	}
 	if !systemMerged && systemPrompt != "" {
-		finalContent = systemPrompt + "\n" + finalContent
+		finalContent = prependSystemPrompt(systemPrompt, finalContent)
 	}
 
 	// 转换工具
