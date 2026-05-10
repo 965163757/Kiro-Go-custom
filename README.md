@@ -8,6 +8,11 @@ Convert Kiro accounts to OpenAI / Anthropic compatible API service.
 
 [English](README.md) | [中文](README_CN.md)
 
+> This repository is a derivative work based on the original project
+> [Quorinex/Kiro-Go](https://github.com/Quorinex/Kiro-Go). It keeps attribution
+> to the original author and adds local customizations for deployment, proxy
+> settings, and admin-side request logging.
+
 If this project helps you, a Star would mean a lot.
 
 ## Features
@@ -23,8 +28,8 @@ If this project helps you, a Star would mean a lot.
 ### Docker Compose (Recommended)
 
 ```bash
-git clone https://github.com/Quorinex/Kiro-Go.git
-cd Kiro-Go
+git clone https://github.com/965163757/Kiro-Go-custom.git
+cd Kiro-Go-custom
 mkdir -p data
 docker-compose up -d
 ```
@@ -44,8 +49,8 @@ docker run -d \
 ### Build from Source
 
 ```bash
-git clone https://github.com/Quorinex/Kiro-Go.git
-cd Kiro-Go
+git clone https://github.com/965163757/Kiro-Go-custom.git
+cd Kiro-Go-custom
 go build -o kiro-go .
 ./kiro-go
 ```

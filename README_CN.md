@@ -8,6 +8,10 @@
 
 [English](README.md) | 中文
 
+> 本仓库是基于原项目 [Quorinex/Kiro-Go](https://github.com/Quorinex/Kiro-Go)
+> 的二次创作版本，保留对原作者和原项目的署名，并在此基础上加入了本地部署、
+> 出站代理设置、管理端请求日志等自定义改动。
+
 如果这个项目帮到了你，欢迎点个 Star 支持一下。
 
 ## 功能特性
@@ -23,8 +27,8 @@
 ### Docker Compose（推荐）
 
 ```bash
-git clone https://github.com/Quorinex/Kiro-Go.git
-cd Kiro-Go
+git clone https://github.com/965163757/Kiro-Go-custom.git
+cd Kiro-Go-custom
 mkdir -p data
 docker-compose up -d
 ```
@@ -44,8 +48,8 @@ docker run -d \
 ### 源码编译
 
 ```bash
-git clone https://github.com/Quorinex/Kiro-Go.git
-cd Kiro-Go
+git clone https://github.com/965163757/Kiro-Go-custom.git
+cd Kiro-Go-custom
 go build -o kiro-go .
 ./kiro-go
 ```
