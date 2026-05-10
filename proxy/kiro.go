@@ -3,10 +3,13 @@
 package proxy
 
 import (
+	"bufio"
 	"bytes"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/crc32"
 	"io"
 	"kiro-go/config"
 	"kiro-go/httpclient"
@@ -214,7 +217,13 @@ func CallKiroAPI(account *config.Account, payload *KiroPayload, callback *KiroSt
 			continue
 		}
 
-		err = parseEventStream(resp.Body, callback)
+		streamReader := bufio.NewReader(resp.Body)
+		if err := detectBufferedUpstreamError(streamReader); err != nil {
+			resp.Body.Close()
+			return err
+		}
+
+		err = parseEventStream(streamReader, callback)
 		resp.Body.Close()
 		return err
 	}
@@ -248,11 +257,15 @@ func parseEventStream(body io.Reader, callback *KiroStreamCallback) error {
 			return err
 		}
 
-		totalLength := int(prelude[0])<<24 | int(prelude[1])<<16 | int(prelude[2])<<8 | int(prelude[3])
-		headersLength := int(prelude[4])<<24 | int(prelude[5])<<16 | int(prelude[6])<<8 | int(prelude[7])
+		totalLength := int(binary.BigEndian.Uint32(prelude[0:4]))
+		headersLength := int(binary.BigEndian.Uint32(prelude[4:8]))
+		expectedPreludeCRC := binary.BigEndian.Uint32(prelude[8:12])
+		if actual := crc32.ChecksumIEEE(prelude[:8]); actual != expectedPreludeCRC {
+			return fmt.Errorf("invalid Kiro event stream prelude CRC")
+		}
 
 		if totalLength < 16 {
-			continue
+			return fmt.Errorf("invalid Kiro event stream message length: %d", totalLength)
 		}
 
 		// 读取剩余部分
@@ -264,10 +277,17 @@ func parseEventStream(body io.Reader, callback *KiroStreamCallback) error {
 		}
 
 		if headersLength > len(msgBuf)-4 {
-			continue
+			return fmt.Errorf("invalid Kiro event stream headers length: %d", headersLength)
+		}
+		messageBytes := append(append([]byte{}, prelude...), msgBuf...)
+		expectedMessageCRC := binary.BigEndian.Uint32(msgBuf[len(msgBuf)-4:])
+		if actual := crc32.ChecksumIEEE(messageBytes[:len(messageBytes)-4]); actual != expectedMessageCRC {
+			return fmt.Errorf("invalid Kiro event stream message CRC")
 		}
 
-		eventType := extractEventType(msgBuf[0:headersLength])
+		headers := extractEventHeaders(msgBuf[0:headersLength])
+		messageType := headers[":message-type"]
+		eventType := headers[":event-type"]
 		payloadBytes := msgBuf[headersLength : len(msgBuf)-4]
 		if len(payloadBytes) == 0 {
 			continue
@@ -276,6 +296,20 @@ func parseEventStream(body io.Reader, callback *KiroStreamCallback) error {
 		var event map[string]interface{}
 		if err := json.Unmarshal(payloadBytes, &event); err != nil {
 			continue
+		}
+
+		if isKiroErrorMessage(messageType) {
+			err := kiroEventError(firstNonEmpty(eventType, messageType), event)
+			if err == nil {
+				err = fmt.Errorf("Kiro %s: %s", messageType, extractKiroEventErrorMessage(event))
+			}
+			if callback.OnComplete != nil {
+				callback.OnComplete(inputTokens, outputTokens)
+			}
+			if callback.OnError != nil {
+				callback.OnError(err)
+			}
+			return err
 		}
 
 		inputTokens, outputTokens = updateTokensFromEvent(event, inputTokens, outputTokens)
@@ -345,6 +379,11 @@ func kiroEventError(eventType string, event map[string]interface{}) error {
 		return nil
 	}
 
+	message := extractKiroEventErrorMessage(event)
+	return fmt.Errorf("Kiro %s: %s", eventType, message)
+}
+
+func extractKiroEventErrorMessage(event map[string]interface{}) string {
 	message := firstStringValue(event, "message", "error", "errorMessage", "reason", "detail")
 	if message == "" {
 		if raw, err := json.Marshal(event); err == nil && len(raw) > 0 {
@@ -354,7 +393,80 @@ func kiroEventError(eventType string, event map[string]interface{}) error {
 	if message == "" {
 		message = "unknown upstream error"
 	}
-	return fmt.Errorf("Kiro %s: %s", eventType, message)
+	return message
+}
+
+func detectBufferedUpstreamError(reader *bufio.Reader) error {
+	peeked, err := reader.Peek(1)
+	if err != nil {
+		return nil
+	}
+	if len(peeked) == 0 || (peeked[0] != '{' && peeked[0] != '[') {
+		return nil
+	}
+
+	body, err := io.ReadAll(reader)
+	if err != nil {
+		return fmt.Errorf("read Kiro upstream response: %w", err)
+	}
+	if err := parseKiroUpstreamErrorBody(body); err != nil {
+		return err
+	}
+	return fmt.Errorf("unexpected JSON response from Kiro upstream: %s", strings.TrimSpace(string(body)))
+}
+
+func parseKiroUpstreamErrorBody(body []byte) error {
+	if len(bytes.TrimSpace(body)) == 0 {
+		return nil
+	}
+	var value interface{}
+	if err := json.Unmarshal(body, &value); err != nil {
+		return nil
+	}
+	if message := findUpstreamErrorMessage(value); message != "" {
+		return fmt.Errorf("Kiro upstream error: %s", message)
+	}
+	return nil
+}
+
+func findUpstreamErrorMessage(value interface{}) string {
+	switch typed := value.(type) {
+	case map[string]interface{}:
+		for _, key := range []string{"message", "Message", "errorMessage", "reason", "detail", "__type", "errorCode"} {
+			if message, ok := typed[key].(string); ok && strings.TrimSpace(message) != "" {
+				return message
+			}
+		}
+		if nested, ok := typed["error"]; ok {
+			if message, ok := nested.(string); ok && strings.TrimSpace(message) != "" {
+				return message
+			}
+			if message := findUpstreamErrorMessage(nested); message != "" {
+				return message
+			}
+		}
+	case []interface{}:
+		for _, item := range typed {
+			if message := findUpstreamErrorMessage(item); message != "" {
+				return message
+			}
+		}
+	}
+	return ""
+}
+
+func isKiroErrorMessage(messageType string) bool {
+	messageType = strings.ToLower(messageType)
+	return strings.Contains(messageType, "error") || strings.Contains(messageType, "exception")
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return "error"
 }
 
 func firstStringValue(m map[string]interface{}, keys ...string) string {
@@ -569,6 +681,12 @@ func finishToolUse(state *toolUseState, callback *KiroStreamCallback) {
 
 // extractEventType 从 headers 中提取事件类型
 func extractEventType(headers []byte) string {
+	return extractEventHeaders(headers)[":event-type"]
+}
+
+// extractEventHeaders 从 AWS EventStream headers 中提取字符串 header
+func extractEventHeaders(headers []byte) map[string]string {
+	values := make(map[string]string)
 	offset := 0
 	for offset < len(headers) {
 		if offset >= len(headers) {
@@ -598,9 +716,7 @@ func extractEventType(headers []byte) string {
 			}
 			value := string(headers[offset : offset+valueLen])
 			offset += valueLen
-			if name == ":event-type" {
-				return value
-			}
+			values[name] = value
 			continue
 		}
 
@@ -618,5 +734,5 @@ func extractEventType(headers []byte) string {
 			break
 		}
 	}
-	return ""
+	return values
 }

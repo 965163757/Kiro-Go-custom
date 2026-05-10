@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/json"
+	"hash/crc32"
 	"strings"
 	"testing"
 )
@@ -60,6 +61,32 @@ func TestParseEventStreamReturnsErrorEvent(t *testing.T) {
 	}
 }
 
+func TestParseEventStreamReturnsMessageTypeError(t *testing.T) {
+	stream := buildTestKiroMessage("error", "internalFailure", map[string]interface{}{"Message": "eventstream failed"})
+
+	err := parseEventStream(bytes.NewReader(stream), &KiroStreamCallback{})
+	if err == nil || !strings.Contains(err.Error(), "eventstream failed") {
+		t.Fatalf("expected message-type error, got %v", err)
+	}
+}
+
+func TestParseEventStreamRejectsInvalidCRC(t *testing.T) {
+	stream := buildTestKiroEvent("assistantResponseEvent", map[string]interface{}{"content": "hello"})
+	stream[len(stream)-1] ^= 0xff
+
+	err := parseEventStream(bytes.NewReader(stream), &KiroStreamCallback{})
+	if err == nil || !strings.Contains(err.Error(), "CRC") {
+		t.Fatalf("expected CRC error, got %v", err)
+	}
+}
+
+func TestParseKiroUpstreamErrorBody(t *testing.T) {
+	err := parseKiroUpstreamErrorBody([]byte(`{"error":{"message":"Invalid model"}}`))
+	if err == nil || !strings.Contains(err.Error(), "Invalid model") {
+		t.Fatalf("expected JSON upstream error, got %v", err)
+	}
+}
+
 func TestParseEventStreamAcceptsAssistantContent(t *testing.T) {
 	stream := buildTestKiroEvent("assistantResponseEvent", map[string]interface{}{"content": "hello"})
 	var got string
@@ -78,17 +105,23 @@ func TestParseEventStreamAcceptsAssistantContent(t *testing.T) {
 }
 
 func buildTestKiroEvent(eventType string, payload map[string]interface{}) []byte {
-	header := buildTestKiroEventHeader(":event-type", eventType)
+	return buildTestKiroMessage("event", eventType, payload)
+}
+
+func buildTestKiroMessage(messageType, eventType string, payload map[string]interface{}) []byte {
+	header := append(buildTestKiroEventHeader(":message-type", messageType), buildTestKiroEventHeader(":event-type", eventType)...)
 	body, _ := json.Marshal(payload)
 
 	totalLength := 12 + len(header) + len(body) + 4
 	buf := bytes.NewBuffer(make([]byte, 0, totalLength))
 	_ = binary.Write(buf, binary.BigEndian, uint32(totalLength))
 	_ = binary.Write(buf, binary.BigEndian, uint32(len(header)))
-	_ = binary.Write(buf, binary.BigEndian, uint32(0))
+	prelude := buf.Bytes()
+	_ = binary.Write(buf, binary.BigEndian, crc32.ChecksumIEEE(prelude))
 	buf.Write(header)
 	buf.Write(body)
-	_ = binary.Write(buf, binary.BigEndian, uint32(0))
+	message := buf.Bytes()
+	_ = binary.Write(buf, binary.BigEndian, crc32.ChecksumIEEE(message))
 	return buf.Bytes()
 }
 
