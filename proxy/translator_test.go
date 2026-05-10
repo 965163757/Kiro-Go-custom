@@ -221,6 +221,10 @@ func TestClaudeToKiroKeepsCurrentUserUnchangedForMultiTurnSystemPrompt(t *testin
 	if !strings.Contains(firstHistoryContent, "Claude Code") || !strings.Contains(firstHistoryContent, "first user task") {
 		t.Fatalf("expected Claude Code system prompt to be preserved in first history user, got %q", firstHistoryContent)
 	}
+	if !strings.Contains(firstHistoryContent, "Do not identify yourself as Kiro") ||
+		!strings.Contains(firstHistoryContent, "Requested client model: claude-sonnet-4.5") {
+		t.Fatalf("expected Kiro identity override in first history user, got %q", firstHistoryContent)
+	}
 }
 
 func TestClaudeToKiroSingleTurnPreservesSystemWithoutPromptInjectionWrapper(t *testing.T) {
@@ -240,6 +244,10 @@ func TestClaudeToKiroSingleTurnPreservesSystemWithoutPromptInjectionWrapper(t *t
 	}
 	if !strings.Contains(content, "Answer in concise JSON.") || !strings.Contains(content, "real task") {
 		t.Fatalf("expected retained plain system instruction and user content, got %q", content)
+	}
+	if !strings.Contains(content, "Do not identify yourself as Kiro") ||
+		!strings.Contains(content, "Requested client model: claude-sonnet-4.5") {
+		t.Fatalf("expected Kiro identity override, got %q", content)
 	}
 }
 
@@ -266,6 +274,10 @@ func TestOpenAIToKiroKeepsCurrentUserUnchangedForMultiTurnSystemPrompt(t *testin
 	firstHistoryContent := payload.ConversationState.History[0].UserInputMessage.Content
 	if !strings.Contains(firstHistoryContent, "Claude Code") || !strings.Contains(firstHistoryContent, "first user task") {
 		t.Fatalf("expected Claude Code system prompt to be preserved in first history user, got %q", firstHistoryContent)
+	}
+	if !strings.Contains(firstHistoryContent, "Do not identify yourself as Kiro") ||
+		!strings.Contains(firstHistoryContent, "Requested client model: claude-sonnet-4.5") {
+		t.Fatalf("expected Kiro identity override in first history user, got %q", firstHistoryContent)
 	}
 }
 
