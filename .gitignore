@@ -1,0 +1,5 @@
+data/
+kiro-go
+*.log
+*.pid
+.DS_Store
